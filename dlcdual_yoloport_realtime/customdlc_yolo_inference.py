@@ -1,11 +1,6 @@
-"""
-custom DLC 2개로 각각 mouse pose estimation (DLC-live로 realtime)
-YOLO로 water port detection
-"""
-
 import os
 import numexpr
-numexpr.set_num_threads(8) 
+numexpr.set_num_threads(8)
 import cv2
 import numpy as np
 import time
@@ -28,13 +23,11 @@ os.makedirs(os.path.dirname(output_video_path), exist_ok=True)
 keypoint_name = "nosetip"
 individuals = ["m1", "m2"]
 
-# YOLO 모델 경로
 model_path = "C:/Users/NeuRLab/hyunsu/LEDdetect_yolo_realtime/runs/detect/train/weights/best.pt"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = YOLO(model_path)
 model.to(device)
 
-# DAQ 설정
 DAQ_CHANNEL = "Dev2/ao0"
 TTL_VOLTAGE = 5.0
 TTL_DURATION = 1
@@ -44,7 +37,6 @@ last_ttl_time = 0
 daq_task = nidaqmx.Task()
 daq_task.ao_channels.add_ao_voltage_chan(DAQ_CHANNEL, min_val=-5.0, max_val=5.0)
 
-# DLC 모델 로드
 dlc_m1 = DLCLive(exported_model_m1)
 dlc_m2 = DLCLive(exported_model_m2)
 
@@ -80,6 +72,11 @@ if not ret:
 dlc_m1.init_inference(frame)
 dlc_m2.init_inference(frame)
 
+# 튐 방지 변수
+MAX_MOVE_DIST = 50  # 픽셀 단위
+prev_pose_m1 = None
+prev_pose_m2 = None
+
 print("!!!시작!!!")
 # ---------------------- 루프 ----------------------
 while True:
@@ -93,20 +90,41 @@ while True:
     pose_m1 = dlc_m1.get_pose(frame)
     pose_m2 = dlc_m2.get_pose(frame)
 
-    def draw_keypoints(pose, color, label_prefix, snout_idx):
+    def draw_keypoints(pose, color, label_prefix, snout_idx, prev_pose):
         if pose is not None and pose.size > 0:
             if pose.ndim == 2:
                 pose = np.expand_dims(pose, axis=0)
-            for animal in pose:
-                for j, (x, y, p) in enumerate(animal):
-                    if p > 0.5:
-                        cv2.circle(frame_vis, (int(x), int(y)), 4, color, -1)
-                        if j == snout_idx:
-                            cv2.putText(frame_vis, f"{label_prefix}-snout", (int(x)+5, int(y)-5),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 
-    draw_keypoints(pose_m1, (0, 255, 0), "m1", snout_idx_m1)
-    draw_keypoints(pose_m2, (0, 0, 255), "m2", snout_idx_m2)
+            filtered_pose = []
+            for i, animal in enumerate(pose):
+                valid_animal_pose = []
+                for j, (x, y, p) in enumerate(animal):
+                    if p < 0.5:
+                        valid_animal_pose.append((None, None, p))
+                        continue
+
+                    if prev_pose is not None and i < len(prev_pose):
+                        prev_x, prev_y, _ = prev_pose[i][j]
+                        if prev_x is not None and prev_y is not None:
+                            dist = np.linalg.norm([x - prev_x, y - prev_y])
+                            if dist > MAX_MOVE_DIST:
+                                valid_animal_pose.append((None, None, p))
+                                continue
+
+                    valid_animal_pose.append((x, y, p))
+                    cv2.circle(frame_vis, (int(x), int(y)), 4, color, -1)
+                    if j == snout_idx:
+                        cv2.putText(frame_vis, f"{label_prefix}-snout", (int(x)+5, int(y)-5),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                filtered_pose.append(valid_animal_pose)
+            return filtered_pose
+        return None
+
+    filtered_pose_m1 = draw_keypoints(pose_m1, (0, 255, 0), "m1", snout_idx_m1, prev_pose_m1)
+    filtered_pose_m2 = draw_keypoints(pose_m2, (0, 0, 255), "m2", snout_idx_m2, prev_pose_m2)
+
+    prev_pose_m1 = filtered_pose_m1
+    prev_pose_m2 = filtered_pose_m2
 
     # YOLO 추론
     results = model.predict(frame, device=device, verbose=False, imgsz=640)
@@ -139,7 +157,7 @@ while True:
         cv2.rectangle(frame_vis, (lx1, ly1), (lx2, ly2), (0, 255, 255), 2)
         cv2.putText(frame_vis, label, (lx1, ly1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
 
-    # 저장 및 옵션 시각화
+    # 저장 및 시각화
     out.write(frame_vis)
     cv2.imshow("Pose + Port Detection", frame_vis)
 
