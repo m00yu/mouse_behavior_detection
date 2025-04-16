@@ -144,18 +144,35 @@ while True:
 
     if best_box is not None:
         now = time.time()
-        if now - last_ttl_time > ttl_cooldown:
-            print(f"🔔 water port 감지됨 (Class {model.names[best_cls_id]}) → TTL 신호 출력!")
-            daq_task.write(TTL_VOLTAGE)
-            time.sleep(TTL_DURATION)
-            daq_task.write(0.0)
-            last_ttl_time = now
 
         lx1, ly1, lx2, ly2 = map(int, best_box)
+        port_center = np.array([(lx1 + lx2) / 2, (ly1 + ly2) / 2])
+
+        m1_nose = None
+        m2_nose = None
+
+        if filtered_pose_m1 and filtered_pose_m1[0][snout_idx_m1][:2] != (None, None):
+            m1_nose = np.array(filtered_pose_m1[0][snout_idx_m1][:2])
+        if filtered_pose_m2 and filtered_pose_m2[0][snout_idx_m2][:2] != (None, None):
+            m2_nose = np.array(filtered_pose_m2[0][snout_idx_m2][:2])
+
+        if m1_nose is not None and m2_nose is not None:
+            dist_m1 = np.linalg.norm(m1_nose - port_center)
+            dist_m2 = np.linalg.norm(m2_nose - port_center)
+
+            if dist_m1 > dist_m2 and now - last_ttl_time > ttl_cooldown:
+                print(f"🔔 m1 nose farther than m2 → TTL 신호 출력!")
+                daq_task.write(TTL_VOLTAGE)
+                time.sleep(TTL_DURATION)
+                daq_task.write(0.0)
+                last_ttl_time = now
+
+        # draw YOLO box regardless of DAQ output
         label_map = {0: "bottom", 1: "left", 2: "right", 3: "up"}
         label = label_map.get(best_cls_id, f"port{best_cls_id}")
         cv2.rectangle(frame_vis, (lx1, ly1), (lx2, ly2), (0, 255, 255), 2)
         cv2.putText(frame_vis, label, (lx1, ly1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+
 
     # 저장 및 시각화
     out.write(frame_vis)
